@@ -37,15 +37,18 @@ layers = [
 % ---- Base pressures at each layer boundary (Pa) ----
 p_base = [101325.0; 22632.1; 5474.89; 868.019; 110.906; 66.9389; 3.95642];
 
-% ---- Vectorise ----
+% ---- Convert geometric altitude to geopotential height for layer equations ----
+% The standard lapse rates and pressure boundaries are in geopotential metres.
+R_earth = 6356766.0;   % nominal Earth radius [m]
 h = max(0, min(double(h(:)), 86000));
+H = R_earth .* h ./ (R_earth + h);
 n = numel(h);
 T     = zeros(n,1);
 p_atm = zeros(n,1);
 
 for i = 1:n
-    idx = find(layers(:,1) <= h(i), 1, 'last');
-    dh  = h(i) - layers(idx,1);
+    idx = find(layers(:,1) <= H(i), 1, 'last');
+    dh  = H(i) - layers(idx,1);
     T0  = layers(idx,2);
     L   = layers(idx,3);
     p0  = p_base(idx);

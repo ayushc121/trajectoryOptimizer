@@ -1,9 +1,9 @@
 function plot_results(best_traj, results, p)
 % PLOT_RESULTS  Trajectory optimisation visualisation
 %
-% Figure 1 — Altitude vs downrange (trajectory + ballistic reference + alpha schedule)
-% Figure 2 — Alpha schedule (own panel — this is the primary control output)
-% Figure 3 — Six-panel flight data vs downrange
+% Figure 1 — Altitude vs surface-arc downrange (trajectory and reference)
+% Figure 2 — Time-based AoA schedule and control knots
+% Figure 3 — Six-panel flight data vs surface-arc downrange
 % Figure 4 — Launch angle comparison bar chart (only when results has >1 entry)
 %
 % CHANGES vs previous version:
@@ -24,13 +24,14 @@ al  = best_traj.alpha;             % [deg] per-timestep alpha from schedule
 
 x_end = best_traj.x_final / 1e3;
 x_ax  = x_end * 1.08;
+y_top = max(40, 1.1*best_traj.h_max/1e3);
 
 % Ballistic reference — stored in p.ball.traj by setup_waypoints
 bx = p.ball.traj.x / 1e3;
 bh = p.ball.traj.h / 1e3;
 
-% Alpha schedule knots (piecewise-linear control profile)
-wp_x_km  = p.wp_ranges / 1e3;
+% Time-based AoA knots (piecewise-linear control profile)
+wp_t = p.wp_times;
 wp_alpha = best_traj.wp_alphas;    % [deg] at each waypoint (set by simulate_trajectory)
 
 %% ==============================================================
@@ -39,7 +40,7 @@ wp_alpha = best_traj.wp_alphas;    % [deg] at each waypoint (set by simulate_tra
 figure('Name','Trajectory Profile','Position',[80 80 1000 500]);
 
 % Forbidden zone above 30 km ceiling
-fill([0 x_ax x_ax 0], [p.h_max/1e3 p.h_max/1e3 40 40], ...
+fill([0 x_ax x_ax 0], [p.h_max/1e3 p.h_max/1e3 y_top y_top], ...
      [1 0.78 0.78], 'EdgeColor','none','FaceAlpha',0.5);
 hold on; grid on; box on;
 
@@ -52,31 +53,32 @@ plot(bx, bh, 'Color',[0.6 0.6 0.6], 'LineStyle','--', 'LineWidth', 1.5);
 % Optimised trajectory
 plot(x, h, 'b-', 'LineWidth', 2.2);
 
-% Waypoint x-positions — vertical ticks with alpha annotation
-y_tick = 0.5;
-for k = 1:length(wp_x_km)
-    xpos = wp_x_km(k);
-    if xpos <= x_ax
-        xline(xpos, ':', 'Color', [0.4 0.4 0.4], 'Alpha', 0.5);
-        text(xpos, y_tick, sprintf('%.0f°', wp_alpha(k)), ...
-             'HorizontalAlignment','center', 'FontSize', 7, ...
-             'Color', [0.2 0.2 0.6]);
-    end
+% Mark knot locations reached by this trajectory on the range plot.
+reached = wp_t <= t(end);
+wp_x_km = interp1(t,x,wp_t(reached),'linear');
+plot(wp_x_km,interp1(t,h,wp_t(reached),'linear'),'.', ...
+     'Color',[0.3 0.3 0.7],'MarkerSize',9);
+
+% Launch and final-state markers
+plot(0,     0, 'gs', 'MarkerSize', 9, 'MarkerFaceColor','g');
+if best_traj.landed
+    plot(x_end, 0, 'rv', 'MarkerSize', 9, 'MarkerFaceColor','r');
+    end_label = 'Impact';
+else
+    plot(x_end, h(end), 'rx', 'MarkerSize', 9, 'LineWidth', 1.5);
+    end_label = 'Integration ended';
 end
 
-% Launch and impact markers
-plot(0,     0, 'gs', 'MarkerSize', 9, 'MarkerFaceColor','g');
-plot(x_end, 0, 'rv', 'MarkerSize', 9, 'MarkerFaceColor','r');
-
-xlabel('Downrange [km]', 'FontSize', 12);
+xlabel('Surface-arc downrange [km]', 'FontSize', 12);
 ylabel('Altitude [km]',  'FontSize', 12);
 title(sprintf('Trajectory  |  \\gamma_0 = %.0f deg  |  Range = %.1f km  |  h_{max} = %.1f km  |  M_{final} = %.2f  |  Feasible: %d', ...
       rad2deg(p.gamma0), x_end, best_traj.h_max/1e3, ...
       best_traj.M_final, best_traj.feasible), 'FontSize', 11);
-legend({'Forbidden zone','30 km ceiling','Ballistic ref.','Trajectory','Launch','Impact'}, ...
+legend({'Forbidden zone','30 km ceiling','Zero-lift ref.','Trajectory', ...
+        'Reached time knots','Launch',end_label}, ...
        'Location','northeast','FontSize', 9);
 xlim([0, x_ax]);
-ylim([0, max(36, best_traj.h_max/1e3 * 1.1)]);
+ylim([0, y_top]);
 
 %% ==============================================================
 %% Figure 2: Alpha schedule
@@ -84,21 +86,22 @@ ylim([0, max(36, best_traj.h_max/1e3 * 1.1)]);
 figure('Name','Alpha Schedule','Position',[90 90 800 280]);
 hold on; grid on; box on;
 
-fill([0 x_ax x_ax 0], [p.alpha_max_deg  p.alpha_max_deg ...
+time_ax = max(t(end),wp_t(end))*1.05;
+fill([0 time_ax time_ax 0], [p.alpha_max_deg  p.alpha_max_deg ...
                        -p.alpha_max_deg -p.alpha_max_deg], ...
      [0.9 0.95 1.0], 'EdgeColor','none','FaceAlpha',0.6);
 
-plot(x, al, 'b-', 'LineWidth', 1.5);
-plot(wp_x_km, wp_alpha, 'ro-', 'MarkerSize', 7, 'MarkerFaceColor','r', 'LineWidth', 1.5);
+plot(t, al, 'b-', 'LineWidth', 1.5);
+plot(wp_t, wp_alpha, 'ro-', 'MarkerSize', 5, 'MarkerFaceColor','r', 'LineWidth', 1.5);
 
 yline( p.alpha_max_deg, 'r--', 'LineWidth', 1);
 yline(-p.alpha_max_deg, 'r--', 'LineWidth', 1);
 yline(0, 'k-', 'LineWidth', 0.8, 'Alpha', 0.4);
 
-xlabel('Downrange [km]', 'FontSize', 12);
+xlabel('Elapsed time [s]', 'FontSize', 12);
 ylabel('\alpha [deg]',   'FontSize', 12);
-title('AoA Schedule — trajectory (blue) and waypoint knots (red)', 'FontSize', 11);
-xlim([0, x_ax]);
+title('AoA Schedule — time history (blue) and time knots (red)', 'FontSize', 11);
+xlim([0, time_ax]);
 ylim([-p.alpha_max_deg*1.3, p.alpha_max_deg*1.3]);
 legend({'±\alpha_{max} band','Schedule (trajectory)','Waypoint knots'}, ...
        'Location','best','FontSize',9);
@@ -114,7 +117,7 @@ plot(x, M, 'b-', 'LineWidth', 1.5); hold on; grid on;
 yline(p.M_min_impact, 'r--', 'LineWidth', 1.5);
 text(x_end*0.05, p.M_min_impact*1.08, sprintf('M = %.0f limit', p.M_min_impact), ...
      'Color','r','FontSize',8);
-xlabel('Downrange [km]'); ylabel('Mach [-]'); title('Mach Number');
+xlabel('Surface-arc downrange [km]'); ylabel('Mach [-]'); title('Mach Number');
 ylim([0, p.M_launch * 1.05]);
 
 % 3b — Load factor
@@ -125,28 +128,28 @@ yline(-p.n_max, 'r--', 'LineWidth', 1.5);
 % Use p.n_max dynamically rather than hardcoding ±15
 text(x_end*0.05, p.n_max*0.85, sprintf('\\pm%.0f g limit', p.n_max), ...
      'Color','r','FontSize',8);
-xlabel('Downrange [km]'); ylabel('n [g]'); title('Load Factor');
+xlabel('Surface-arc downrange [km]'); ylabel('n [g]'); title('Load Factor');
 
 % 3c — Speed
 ax3 = subplot(2,3,3);
 plot(x, V, 'b-', 'LineWidth', 1.5); hold on; grid on;
 yline(p.V_min_impact, 'r--', 'LineWidth', 1.5);
 text(x_end*0.05, p.V_min_impact*1.05, 'V_{min}', 'Color','r','FontSize',8);
-xlabel('Downrange [km]'); ylabel('Speed [m/s]'); title('Airspeed');
+xlabel('Surface-arc downrange [km]'); ylabel('Speed [m/s]'); title('Airspeed');
 
 % 3d — Flight path angle
 ax4 = subplot(2,3,4);
 plot(x, gam, 'b-', 'LineWidth', 1.5); hold on; grid on;
 yline(0, 'k-', 'LineWidth', 0.8, 'Alpha', 0.4);
-xlabel('Downrange [km]'); ylabel('\gamma [deg]'); title('Flight Path Angle');
+xlabel('Surface-arc downrange [km]'); ylabel('\gamma [deg]'); title('Flight Path Angle');
 
 % 3e — Altitude
 ax5 = subplot(2,3,5);
 plot(bx, bh, '--', 'Color',[0.6 0.6 0.6], 'LineWidth', 1.2); hold on; grid on;
 plot(x, h, 'b-', 'LineWidth', 1.5);
 yline(p.h_max/1e3, 'r--', 'LineWidth', 1.5);
-xlabel('Downrange [km]'); ylabel('Altitude [km]'); title('Altitude');
-legend({'Ballistic ref.','Trajectory'}, 'Location','best','FontSize',8);
+xlabel('Surface-arc downrange [km]'); ylabel('Altitude [km]'); title('Altitude');
+legend({'Zero-lift ref.','Trajectory'}, 'Location','best','FontSize',8);
 ylim([0, max(35, best_traj.h_max/1e3 * 1.1)]);
 
 % 3f — L/D ratio
@@ -166,7 +169,7 @@ else
          'Units','normalized','HorizontalAlignment','center','FontSize',10);
     grid on;
 end
-xlabel('Downrange [km]'); ylabel('L/D [-]'); title('Lift-to-Drag Ratio');
+xlabel('Surface-arc downrange [km]'); ylabel('L/D [-]'); title('Lift-to-Drag Ratio');
 
 linkaxes([ax1 ax2 ax3 ax4 ax5 ax6], 'x');
 for ax = [ax1 ax2 ax3 ax4 ax5 ax6]
