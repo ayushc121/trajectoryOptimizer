@@ -12,9 +12,18 @@ main_trajectory_fmincon
 
 This version has one SQP search. The previous high-cruise, low-cruise,
 zero-lift-hold, and post-peak-reclimb branches are removed. It uses the same
-718 AoA knots, 1800 s control horizon, 2500 s ODE limit, and 42 smooth
-correction anchors plus launch angle. Change these in `User settings` at the
-top of `main_trajectory_fmincon.m`.
+early knot density, with 778 AoA knots through a 2000 s control horizon,
+a 2500 s ODE limit, and 42 correction anchors plus launch angle. The
+settings match your longer-flight grid: `CONTROL_HORIZON_S = 2000`,
+`N_EXTRA_TIME_KNOTS = 80`, `BASE_CONTROL_HORIZON_S = 1200`, and
+`N_BASE_TIME_KNOTS = 180`.
+
+`SEED_START_MODE = 'near_ceiling'` is the new default and starts SQP from
+the highest-range verified near-ceiling naive seed. Set it to
+`'equilibrium'` to optimize the feasible seed near the balance altitude.
+Both candidates are printed and
+plotted in either mode; the selected start is marked by `SQP start [...]`.
+Run once with each setting to compare the local searches.
 
 The CSV gives the best-L/D AoA (about -0.5 degrees). The script calculates
 instantaneous equilibrium altitude by solving
@@ -47,10 +56,12 @@ The launch angle is free within its configured bounds. A failed SQP exit
 can still retain a better feasible trial; the final result is replayed at
 0.5 s before saving.
 
-Results are saved as `results/results_fmincon_start40_h1800_ldcruise.mat`,
-`results/trajectory_fmincon_start40_h1800_ldcruise.csv`, and
-`results/ld_cruise_comparison.png`. The `.mat` includes the optimized
-trajectory, selected seed, near-ceiling comparison, all generated seed
+Results are saved with the selected start mode in the filename, for
+example `results/results_fmincon_start40_h2000_ldcruise_near_ceiling.mat`,
+`results/trajectory_fmincon_start40_h2000_ldcruise_near_ceiling.csv`,
+and `results/ld_cruise_comparison_near_ceiling.png`. Checkpoints are
+also separate, so running both modes preserves both outcomes. The `.mat` includes the optimized
+trajectory, selected seed, equilibrium and near-ceiling comparisons, all generated seed
 schedules and their labels, and optimizer metadata. Earlier branch results
 remain in `results` but are not warm starts or final candidates.
 

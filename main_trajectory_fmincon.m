@@ -7,11 +7,11 @@ function main_trajectory_fmincon()
 LAUNCH_ANGLE_DEG = 40;
 LAUNCH_ANGLE_MIN_DEG = 20;
 LAUNCH_ANGLE_MAX_DEG = 60;
-CONTROL_HORIZON_S = 1800;
+CONTROL_HORIZON_S = 2000;
 MAX_FLIGHT_TIME_S = 2500;
 BASE_CONTROL_HORIZON_S = 1200;
 N_BASE_TIME_KNOTS = 180;
-N_EXTRA_TIME_KNOTS = 60;
+N_EXTRA_TIME_KNOTS = 80;
 N_EARLY_KNOTS = 30;
 EARLY_WINDOW_S = 60;
 SUBSTEPS_PER_OLD_INTERVAL = 3;
@@ -21,6 +21,7 @@ N_OPT_LATE = 8;
 MAX_CORRECTION_DEG = 5;
 CRUISE_AOA_WINDOW_DEG = 0.5; % allowed departure from best-L/D AoA during cruise
 EQUIL_ENTRY_TOLERANCE_KM = 2; % prefer a feasible seed near its entry equilibrium
+SEED_START_MODE = 'equilibrium'; % 'equilibrium' or 'near_ceiling'
 MAX_ITER = 80;
 MAX_EVAL = 2500;
 FD_STEP_DEG = 0.03;
@@ -33,6 +34,11 @@ results_dir=fullfile(folder,'results');
 if ~exist(results_dir,'dir'), mkdir(results_dir); end
 if exist('fmincon','file')~=2
     error('main_trajectory_fmincon:toolbox','Optimization Toolbox is required.');
+end
+if ~strcmp(SEED_START_MODE,'equilibrium') && ...
+        ~strcmp(SEED_START_MODE,'near_ceiling')
+    error('main_trajectory_fmincon:startMode', ...
+        'SEED_START_MODE must be equilibrium or near_ceiling.');
 end
 fprintf('Running: %s\n',mfilename('fullpath'));
 fprintf('Dependencies: %s | %s\n',which('build_vehicle_params'), ...
@@ -125,38 +131,31 @@ near=valid(entry_error(valid)<=EQUIL_ENTRY_TOLERANCE_KM);
 [~,rank_near]=sort(range(near),'descend');
 [~,rank_all]=sort(entry_error(valid),'ascend');
 order=unique([near(rank_near);valid(rank_all)],'stable');
-seed_idx=NaN;
+equilibrium_idx=NaN;
 for k=order(:)'
     if replay_ok(seeds(k,:),p,trials{k})
-        seed_idx=k; break;
+        equilibrium_idx=k; break;
     end
 end
-if isnan(seed_idx)
+if isnan(equilibrium_idx)
     error('main_trajectory_fmincon:replay', ...
         'No max-L/D seed passed the finer ODE replay.');
 end
-seed_alpha=seeds(seed_idx,:);
-seed_traj=trials{seed_idx};
-switch_s=design(seed_idx).switch_s;
-descend_s=sscanf(labels{seed_idx},'ld_turn%d_switch%d_down%d');
-descend_s=descend_s(end);
 fprintf('Selected equilibrium-entry seed: %s; %.2f km, peak %.2f km, entry mismatch %.2f km, Mach %.3f.\n', ...
-    labels{seed_idx},seed_traj.x_final/1e3,seed_traj.h_max/1e3, ...
-    entry_error(seed_idx),seed_traj.M_final);
-[~,entry_eq,entry_h,entry_V,entry_gamma]=entry_mismatch( ...
-    seed_traj,switch_s,p);
-fprintf('At max-L/D switch %.0f s: altitude %.2f km, balance altitude %.2f km, speed %.1f m/s, flight-path angle %.2f deg.\n', ...
-    switch_s,entry_h/1e3,entry_eq/1e3,entry_V, ...
-    rad2deg(entry_gamma));
+    labels{equilibrium_idx},trials{equilibrium_idx}.x_final/1e3, ...
+    trials{equilibrium_idx}.h_max/1e3,entry_error(equilibrium_idx), ...
+    trials{equilibrium_idx}.M_final);
 peak_heights=cellfun(@(tr)tr.h_max,trials(valid));
 near_ceiling=valid(peak_heights>=0.90*p.h_max);
 naive_traj=[];
 naive_label='';
+naive_idx=NaN;
 if ~isempty(near_ceiling)
     [~,naive_order]=sort(range(near_ceiling),'descend');
     for k=near_ceiling(naive_order(:))'
         if replay_ok(seeds(k,:),p,trials{k})
             naive_traj=simulate_trajectory(seeds(k,:),p,true);
+            naive_idx=k;
             naive_label=labels{k};
             fprintf('Near-ceiling naive max-L/D comparison: %s; %.2f km, peak %.2f km.\n', ...
                 naive_label,naive_traj.x_final/1e3,naive_traj.h_max/1e3);
@@ -164,6 +163,26 @@ if ~isempty(near_ceiling)
         end
     end
 end
+seed_idx=equilibrium_idx;
+if strcmp(SEED_START_MODE,'near_ceiling')
+    if isnan(naive_idx)
+        error('main_trajectory_fmincon:noNearCeiling', ...
+            'No near-ceiling max-L/D seed passed the finer ODE replay.');
+    end
+    seed_idx=naive_idx;
+end
+seed_alpha=seeds(seed_idx,:);
+seed_traj=trials{seed_idx};
+switch_s=design(seed_idx).switch_s;
+descend_s=sscanf(labels{seed_idx},'ld_turn%d_switch%d_down%d');
+descend_s=descend_s(end);
+[~,entry_eq,entry_h,entry_V,entry_gamma]=entry_mismatch( ...
+    seed_traj,switch_s,p);
+fprintf('SQP start [%s]: %s; %.2f km; entry altitude %.2f km vs balance %.2f km; speed %.1f m/s; flight-path angle %.2f deg.\n', ...
+    SEED_START_MODE,labels{seed_idx},seed_traj.x_final/1e3, ...
+    entry_h/1e3,entry_eq/1e3,entry_V,rad2deg(entry_gamma));
+equilibrium_traj=simulate_trajectory( ...
+    seeds(equilibrium_idx,:),p_with_angle(p,LAUNCH_ANGLE_DEG),true);
 
 %% Maximize verified impact range, retaining a narrow best-L/D cruise AoA.
 cruise_anchor=(anchor_t>=switch_s+30 & anchor_t<=descend_s-30);
@@ -176,8 +195,8 @@ last_x=[]; last_traj=[];
 eval_count=0;
 checkpoint_range=seed_traj.x_final;
 checkpoint_file=fullfile(results_dir,sprintf( ...
-    'fmincon_checkpoint_start%d_h%d_ldcruise.mat', ...
-    LAUNCH_ANGLE_DEG,CONTROL_HORIZON_S));
+    'fmincon_checkpoint_start%d_h%d_ldcruise_%s.mat', ...
+    LAUNCH_ANGLE_DEG,CONTROL_HORIZON_S,SEED_START_MODE));
 A=[B,zeros(p.N_wp,1);-B,zeros(p.N_wp,1)];
 b=[p.wp_ub(:)-seed_alpha(:);seed_alpha(:)-p.wp_lb(:)];
 fd_steps=[FD_STEP_DEG*ones(1,n_control), ...
@@ -225,6 +244,8 @@ p.ball.x_ball=p.ball.traj.x_final;
 p.ball.t_flight=p.ball.traj.t_flight;
 info.method='fmincon sqp, best-L/D cruise';
 info.start_label=labels{seed_idx};
+info.seed_start_mode=SEED_START_MODE;
+info.equilibrium_candidate_label=labels{equilibrium_idx};
 info.start_alpha=seed_alpha;
 info.start_range_m=seed_traj.x_final;
 info.start_entry_mismatch_km=entry_error(seed_idx);
@@ -241,17 +262,18 @@ info.evaluations=eval_count;
 info.seconds=seconds;
 info.naive_label=naive_label;
 outfile=fullfile(results_dir,sprintf( ...
-    'results_fmincon_start%d_h%d_ldcruise.mat', ...
-    LAUNCH_ANGLE_DEG,CONTROL_HORIZON_S));
-save(outfile,'traj','wp_opt','p','info','seed_traj','naive_traj', ...
+    'results_fmincon_start%d_h%d_ldcruise_%s.mat', ...
+    LAUNCH_ANGLE_DEG,CONTROL_HORIZON_S,SEED_START_MODE));
+save(outfile,'traj','wp_opt','p','info','seed_traj', ...
+    'equilibrium_traj','naive_traj', ...
     'seeds','labels','design');
 T_exp=table(traj.t,traj.x/1e3,traj.h/1e3,traj.V,traj.M, ...
     traj.n,traj.alpha,rad2deg(traj.gamma), ...
     'VariableNames',{'t_s','x_km','h_km','V_ms','Mach','n_g', ...
     'alpha_deg','gamma_deg'});
 writetable(T_exp,fullfile(results_dir,sprintf( ...
-    'trajectory_fmincon_start%d_h%d_ldcruise.csv', ...
-    LAUNCH_ANGLE_DEG,CONTROL_HORIZON_S)));
+    'trajectory_fmincon_start%d_h%d_ldcruise_%s.csv', ...
+    LAUNCH_ANGLE_DEG,CONTROL_HORIZON_S,SEED_START_MODE)));
 summary=struct('launch_angle_deg',rad2deg(p.gamma0), ...
     'range_km',traj.x_final/1e3,'feasible',traj.feasible, ...
     'traj',traj,'info',info);
@@ -261,8 +283,8 @@ if ~isempty(naive_traj)
     plot(naive_traj.x/1e3,naive_traj.h/1e3, ...
         'Color',[0.5 0.5 0.5],'LineWidth',1.4);
 end
-seed_detail=simulate_trajectory(seed_alpha,p_with_angle(p,LAUNCH_ANGLE_DEG),true);
-plot(seed_detail.x/1e3,seed_detail.h/1e3,'b-','LineWidth',1.5);
+plot(equilibrium_traj.x/1e3,equilibrium_traj.h/1e3, ...
+    'b-','LineWidth',1.5);
 plot(traj.x/1e3,traj.h/1e3,'g-','LineWidth',1.8);
 yline(p.h_max/1e3,'r--','Altitude ceiling');
 xlabel('Surface-arc range [km]');ylabel('Altitude [km]');
@@ -273,9 +295,11 @@ else
     legend('Near-ceiling naive seed','Equilibrium-entry seed', ...
         'SQP result','Altitude ceiling','Location','best');
 end
-title(sprintf('Entry mismatch %.2f km | seed %.1f km | SQP %.1f km', ...
-    entry_error(seed_idx),seed_traj.x_final/1e3,traj.x_final/1e3));
-saveas(fig,fullfile(results_dir,'ld_cruise_comparison.png'));
+title(sprintf('SQP start: %s | seed %.1f km | SQP %.1f km', ...
+    SEED_START_MODE,seed_traj.x_final/1e3,traj.x_final/1e3), ...
+    'Interpreter','none');
+saveas(fig,fullfile(results_dir,sprintf( ...
+    'ld_cruise_comparison_%s.png',SEED_START_MODE)));
 fprintf('Max-L/D SQP: start %.2f km, verified best %.2f km at %.3f deg; flight %.1f s; %d evaluations in %.1f min.\n', ...
     seed_traj.x_final/1e3,traj.x_final/1e3,rad2deg(p.gamma0), ...
     traj.t_flight,eval_count,seconds/60);
